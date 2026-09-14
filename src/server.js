@@ -297,7 +297,21 @@ function requireSetupAuth(req, res, next) {
 
 const app = express();
 app.disable("x-powered-by");
-app.use(express.json({ limit: "1mb" }));
+// Parse JSON for the wrapper's own routes, but NEVER for /hooks/*.
+//
+// express.json() drains the request stream into req.body. The catch-all proxy
+// below then forwards the headers — Content-Length included — over a stream
+// that has nothing left in it, so the gateway waits for a body that never
+// arrives and drops the connection at its 30s body-read timeout. The caller
+// sees a 502 "Gateway unavailable" with no gateway log line at all, because
+// the request never completed on that side.
+//
+// Skipping the parser (rather than re-serializing req.body into proxyReq)
+// keeps the bytes byte-identical, which webhook signature checks depend on.
+const parseJson = express.json({ limit: "1mb" });
+app.use((req, res, next) =>
+  req.path.startsWith("/hooks") ? next() : parseJson(req, res, next),
+);
 
 // Minimal health endpoint for Railway.
 app.get("/setup/healthz", (_req, res) => res.json({ ok: true }));
