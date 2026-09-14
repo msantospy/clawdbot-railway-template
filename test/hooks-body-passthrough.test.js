@@ -12,14 +12,33 @@ import httpProxy from "http-proxy";
 // blocks waiting for bytes that never arrive and drops the socket at its 30s
 // body-read timeout — surfacing as a 502 with no gateway-side log line.
 
-test("server.js does not apply the JSON parser to /hooks/*", () => {
+test("server.js does not apply the JSON parser to machine routes", () => {
   const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.doesNotMatch(
     src,
     /app\.use\(express\.json\(/,
-    "express.json() must not be mounted unconditionally — it would eat the /hooks body",
+    "express.json() must not be mounted unconditionally — it would eat the /hooks and /v1 body",
   );
-  assert.match(src, /req\.path\.startsWith\("\/hooks"\)\s*\?\s*next\(\)/);
+  assert.match(src, /isMachineRoute\(req\.path\)\s*\?\s*next\(\)/);
+  assert.match(src, /startsWith\("\/hooks"\)\s*\|\|\s*p\.startsWith\("\/v1\/"\)/);
+});
+
+// /v1/chat/completions is full operator access to the gateway, and this wrapper
+// runs on a public domain. It is exempt from dashboard Basic auth so the caller
+// can use the Authorization header for the gateway bearer — which means the
+// wrapper must not fill that header in for a caller who sent nothing, or the
+// endpoint is open to anyone who finds the URL.
+test("the gateway token is never injected into /v1 requests", () => {
+  const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const fn = src.slice(
+    src.indexOf("function attachGatewayAuthHeader"),
+    src.indexOf("proxy.on(\"proxyReqWs\""),
+  );
+  assert.match(fn, /startsWith\("\/v1\/"\)\)\s*return;/);
+  assert.ok(
+    fn.indexOf("/v1/") < fn.indexOf("OPENCLAW_GATEWAY_TOKEN"),
+    "the /v1 guard must come before the token is attached",
+  );
 });
 
 /** Upstream that reports how many body bytes actually arrived. */

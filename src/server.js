@@ -308,9 +308,13 @@ app.disable("x-powered-by");
 //
 // Skipping the parser (rather than re-serializing req.body into proxyReq)
 // keeps the bytes byte-identical, which webhook signature checks depend on.
+// Machine-facing routes: they carry their own credential and must reach the
+// gateway as raw bytes. Everything else is the browser dashboard.
+const isMachineRoute = (p) => p.startsWith("/hooks") || p.startsWith("/v1/");
+
 const parseJson = express.json({ limit: "1mb" });
 app.use((req, res, next) =>
-  req.path.startsWith("/hooks") ? next() : parseJson(req, res, next),
+  isMachineRoute(req.path) ? next() : parseJson(req, res, next),
 );
 
 // Minimal health endpoint for Railway.
@@ -1347,7 +1351,9 @@ proxy.on("error", (err, _req, res) => {
 // not just the /setup routes.  Healthcheck is excluded so Railway probes work.
 function requireDashboardAuth(req, res, next) {
   if (req.path === "/healthz" || req.path === "/setup/healthz") return next();
-  if (req.path.startsWith("/hooks")) return next(); // allow OpenClaw webhook endpoints to bypass dashboard auth
+  // Machine routes authenticate themselves — /hooks with hooks.token, /v1 with
+  // the gateway bearer — and Basic would occupy the same Authorization header.
+  if (isMachineRoute(req.path)) return next();
   if (!SETUP_PASSWORD) return next(); // no password configured → open
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
@@ -1370,6 +1376,13 @@ function requireDashboardAuth(req, res, next) {
 // cannot set custom Authorization headers for WebSocket connections, so we inject
 // the token into proxied requests at the wrapper level.
 function attachGatewayAuthHeader(req) {
+  // NEVER for /v1/*. That endpoint is full operator access to the gateway
+  // ("once a caller passes Gateway auth here, OpenClaw treats that caller as a
+  // trusted operator"), and this service is on a public Railway domain. Since
+  // /v1 is exempt from dashboard Basic auth, injecting the token for a caller
+  // who sent no credential would hand operator access to the open internet.
+  // Callers there must present the gateway bearer themselves.
+  if (req?.path?.startsWith("/v1/")) return;
   if (!req?.headers?.authorization && OPENCLAW_GATEWAY_TOKEN) {
     req.headers.authorization = `Bearer ${OPENCLAW_GATEWAY_TOKEN}`;
   }
