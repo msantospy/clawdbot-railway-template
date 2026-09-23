@@ -430,6 +430,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
         <option value="openclaw.status">openclaw status</option>
         <option value="openclaw.health">openclaw health</option>
         <option value="openclaw.doctor">openclaw doctor</option>
+        <option value="openclaw.doctor.fix">openclaw doctor --fix (migra o estado)</option>
         <option value="openclaw.logs.tail">openclaw logs --tail N</option>
         <option value="openclaw.config.get">openclaw config get &lt;path&gt;</option>
         <option value="openclaw.version">openclaw --version</option>
@@ -995,6 +996,7 @@ const ALLOWED_CONSOLE_COMMANDS = new Set([
   "openclaw.status",
   "openclaw.health",
   "openclaw.doctor",
+  "openclaw.doctor.fix",
   "openclaw.logs.tail",
   "openclaw.config.get",
 
@@ -1045,6 +1047,26 @@ app.post("/setup/api/console/run", requireSetupAuth, async (req, res) => {
     if (cmd === "openclaw.health") {
       const r = await runCmd(OPENCLAW_NODE, clawArgs(["health"]));
       return res.status(r.code === 0 ? 200 : 500).json({ ok: r.code === 0, output: redactSecrets(r.output) });
+    }
+    if (cmd === "openclaw.doctor.fix") {
+      // Atualizar o OpenClaw pode exigir migrar o estado em /data (ex.: "Legacy
+      // session store requires migration"), e o gateway recusa subir ate isso
+      // rodar. Sem esta opcao, a unica saida era um shell no container.
+      if (gatewayProc) {
+        try { gatewayProc.kill("SIGTERM"); } catch {}
+        await sleep(750);
+        gatewayProc = null;
+      }
+      const r = await runCmd(OPENCLAW_NODE, clawArgs(["doctor", "--fix"]));
+      let depois = "";
+      try {
+        await restartGateway();
+        depois = "\n[gateway] reiniciado depois do doctor --fix\n";
+      } catch (err) {
+        depois = `\n[gateway] ainda nao subiu: ${String(err)}\n`;
+      }
+      const ok = r.code === 0;
+      return res.status(ok ? 200 : 500).json({ ok, output: redactSecrets(r.output + depois) });
     }
     if (cmd === "openclaw.doctor") {
       const r = await runCmd(OPENCLAW_NODE, clawArgs(["doctor"]));
