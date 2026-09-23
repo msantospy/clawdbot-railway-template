@@ -1371,7 +1371,18 @@ proxy.on("error", (err, _req, res) => {
 // --- Dashboard password protection ---
 // Require the same SETUP_PASSWORD for the entire Control UI dashboard,
 // not just the /setup routes.  Healthcheck is excluded so Railway probes work.
+// Basic no dashboard + token injetado pelo wrapper e o modelo do OpenClaw 3.x.
+// Do 2026.9 em diante o Control UI pede o token do gateway na tela e o manda
+// ele mesmo, e parte dos pedidos sai de um service worker, que NAO carrega a
+// credencial Basic do navegador: o Basic devolvia 401 em /sw.js e
+// /control-ui-config.json e o navegador pedia a senha sem parar. Com o token
+// do proprio gateway na frente, o Basic aqui so atrapalha, e o token injetado
+// entregaria acesso de operador a quem chegasse sem credencial nenhuma.
+// WRAPPER_DASHBOARD_BASIC=true volta ao comportamento antigo (3.x).
+const DASHBOARD_BASIC = process.env.WRAPPER_DASHBOARD_BASIC?.trim().toLowerCase() === "true";
+
 function requireDashboardAuth(req, res, next) {
+  if (!DASHBOARD_BASIC) return next();
   if (req.path === "/healthz" || req.path === "/setup/healthz") return next();
   // Machine routes authenticate themselves — /hooks with hooks.token, /v1 with
   // the gateway bearer — and Basic would occupy the same Authorization header.
@@ -1405,6 +1416,9 @@ function attachGatewayAuthHeader(req) {
   // who sent no credential would hand operator access to the open internet.
   // Callers there must present the gateway bearer themselves.
   if (req?.path?.startsWith("/v1/")) return;
+  // Sem o Basic na frente (ver DASHBOARD_BASIC), injetar o token seria abrir o
+  // gateway para qualquer um. So injeta no modo antigo.
+  if (!DASHBOARD_BASIC) return;
   if (!req?.headers?.authorization && OPENCLAW_GATEWAY_TOKEN) {
     req.headers.authorization = `Bearer ${OPENCLAW_GATEWAY_TOKEN}`;
   }
